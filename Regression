@@ -1,0 +1,172 @@
+#回歸任務
+from sklearn.datasets import fetch_california_housing
+from sklearn.model_selection import train_test_split, KFold, RandomizedSearchCV, learning_curve, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
+import time
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+import numpy as np
+
+# Load dataset
+housing = fetch_california_housing()
+X, y = housing.data, housing.target
+feature_names = housing.feature_names
+df_combined = pd.DataFrame(X, columns=feature_names)
+df_combined['MedHouseVal'] = y
+
+# Outlier removal
+numerical_features = ['MedInc', 'AveRooms', 'AveBedrms', 'Population', 'AveOccup']
+outlier_rows_indices = pd.Index([])
+for feature in numerical_features:
+    Q1 = df_combined[feature].quantile(0.25)
+    Q3 = df_combined[feature].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    feature_outliers = df_combined[(df_combined[feature] < lower_bound) | (df_combined[feature] > upper_bound)].index
+    outlier_rows_indices = outlier_rows_indices.union(feature_outliers)
+
+df_cleaned = df_combined.drop(outlier_rows_indices)
+X_cleaned = df_cleaned.drop('MedHouseVal', axis=1)
+y_cleaned = df_cleaned['MedHouseVal']
+
+# Split the cleaned data
+X_train_cleaned, X_test_cleaned, y_train_cleaned, y_test_cleaned = train_test_split(
+    X_cleaned, y_cleaned, test_size=0.3, random_state=42
+)
+
+# Scale the cleaned features
+scaler_cleaned = StandardScaler()
+X_train_cleaned_scaled = scaler_cleaned.fit_transform(X_train_cleaned)
+X_test_cleaned_scaled = scaler_cleaned.transform(X_test_cleaned)
+
+# Define models with hyperparameter distributions
+models = {
+    'Ridge Regression': Ridge(),
+    'Lasso Regression': Lasso(),
+    'Elastic Net': ElasticNet(),
+    'Random Forest': RandomForestRegressor(random_state=42),
+    'Gradient Boosting': GradientBoostingRegressor(random_state=42)
+}
+
+param_distributions = {
+    'Ridge Regression': {'alpha': [0.1, 1.0, 10.0]},
+    'Lasso Regression': {'alpha': [0.01, 0.1, 1.0]},
+    'Elastic Net': {'alpha': [0.01, 0.1, 1.0, 5.0], 'l1_ratio': [0.2, 0.4, 0.6, 0.8]},
+    'Random Forest': {'n_estimators': [50, 150], 'max_depth': [3, 7], 'min_samples_split': [2, 5]},
+    'Gradient Boosting': {'n_estimators': [50, 150], 'learning_rate': [0.1, 0.2], 'max_depth': [3, 5]}
+}
+
+# In the training loop, update the RandomizedSearchCV call for Elastic Net
+random_search = RandomizedSearchCV(
+    model,
+    param_distributions=param_distributions[name],
+    n_iter=5,  # Increased from 3
+    cv=2,
+    scoring='neg_mean_squared_error',
+    n_jobs=-1,
+    random_state=42
+)
+
+# Train and optimize models
+results = {}
+for name, model in models.items():
+    start_time = time.time()
+
+    # Set data input format (whether scaled)
+    use_scaled = name in ['Ridge Regression', 'Lasso Regression', 'Elastic Net']
+    X_train_used = X_train_cleaned_scaled if use_scaled else X_train_cleaned
+    X_test_used = X_test_cleaned_scaled if use_scaled else X_test_cleaned
+
+    # Optimized hyperparameter search
+    random_search = RandomizedSearchCV(
+        model,
+        param_distributions=param_distributions[name],
+        n_iter=3,
+        cv=2,
+        scoring='neg_mean_squared_error',
+        n_jobs=-1,
+        random_state=42
+    )
+
+    random_search.fit(X_train_used, y_train_cleaned)
+    best_model = random_search.best_estimator_
+    y_pred = best_model.predict(X_test_used)
+    end_time = time.time()
+
+    # Evaluation metrics including Adjusted R²
+    mse = mean_squared_error(y_test_cleaned, y_pred)
+    r2 = r2_score(y_test_cleaned, y_pred)
+    n = X_test_cleaned.shape[0]
+    p = X_test_cleaned.shape[1]
+    adjusted_r2 = 1 - (1 - r2) * (n - 1) / (n - p - 1)
+    mae = mean_absolute_error(y_test_cleaned, y_pred)
+    mape = mean_absolute_percentage_error(y_test_cleaned, y_pred)
+    results[name] = {
+        'model': best_model,
+        'y_pred': y_pred,
+        'mse': mse,
+        'r2': r2,
+        'adjusted_r2': adjusted_r2,
+        'mae': mae,
+        'mape': mape,
+        'time': end_time - start_time
+    }
+
+# Cross-validation
+cv_scores = {}
+kf = KFold(n_splits=3, shuffle=True, random_state=42)
+for name, res in results.items():
+    cv_mse_scores = -cross_val_score(res['model'], X_train_cleaned_scaled if name in ['Ridge Regression', 'Lasso Regression', 'Elastic Net'] else X_train_cleaned, y_train_cleaned, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1)
+    cv_scores[name] = {'mean_mse': cv_mse_scores.mean(), 'std_mse': cv_mse_scores.std()}
+
+# Combined learning curve and CV scores plot
+plt.figure(figsize=(10, 6))
+colors = {'Ridge Regression': 'blue', 'Lasso Regression': 'cyan', 'Elastic Net': 'purple', 'Random Forest': 'green', 'Gradient Boosting': 'red'}
+for name, res in results.items():
+    use_scaled = name in ['Ridge Regression', 'Lasso Regression', 'Elastic Net']
+    X_train_used = X_train_cleaned_scaled if use_scaled else X_train_cleaned
+    train_sizes, train_scores, val_scores = learning_curve(res['model'], X_train_used, y_train_cleaned, cv=3, n_jobs=-1, train_sizes=np.linspace(0.1, 1.0, 3))
+    train_mean = np.mean(train_scores, axis=1)
+    val_mean = np.mean(val_scores, axis=1)
+    plt.plot(train_sizes, train_mean, '--', color=colors[name], label=f'{name} Train')
+    plt.plot(train_sizes, val_mean, '-', color=colors[name], label=f'{name} CV')
+
+    # Add CV scores as points
+    cv_r2_scores = cross_val_score(res['model'], X_train_used, y_train_cleaned, cv=3, scoring='r2')
+    plt.scatter(np.mean(train_sizes), np.mean(cv_r2_scores), color=colors[name], marker='o', s=100)
+
+plt.xlabel('Training Examples')
+plt.ylabel('Score')
+plt.title('Learning Curves with CV Scores')
+plt.legend()
+plt.tight_layout()
+plt.savefig('combined_learning_cv_scores_with_elasticnet.png')
+plt.close()
+
+# Integrated visualization
+plt.figure(figsize=(10, 6))
+for name in models.keys():
+    plt.scatter(y_test_cleaned, results[name]['y_pred'], alpha=0.5, color=colors[name], label=name, s=10)
+plt.plot([y_test_cleaned.min(), y_test_cleaned.max()], [y_test_cleaned.min(), y_test_cleaned.max()], 'k--', lw=1)
+plt.xlabel('Real Median House Value')
+plt.ylabel('Predicted Median House Value')
+plt.title('Model Predictions vs Real Values')
+plt.legend()
+plt.tight_layout()
+plt.savefig('integrated_regression_scatter_optimized_with_elasticnet.png')
+plt.close()
+
+# Print results
+results_df = pd.DataFrame([(name, res['mse'], res['r2'], res['adjusted_r2'], res['mae'], res['mape'], res['time']) for name, res in results.items()],
+                         columns=['Model', 'MSE', 'R2 Score', 'Adjusted R2', 'MAE', 'MAPE', 'Training Time (s)'])
+cv_df = pd.DataFrame([(name, cv['mean_mse'], cv['std_mse']) for name, cv in cv_scores.items()],
+                     columns=['Model', 'CV Mean MSE', 'CV Std MSE'])
+print("Optimized Regression Results (Cleaned Data, with Elastic Net):")
+print(results_df)
+print("\nCross-Validation Results:")
+print(cv_df)
