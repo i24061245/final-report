@@ -1,0 +1,127 @@
+#分類任務
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import time
+
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import (
+    accuracy_score,
+    precision_recall_fscore_support,
+    confusion_matrix,
+    roc_curve,
+    auc
+)
+
+# === 1. 讀取資料集 ===
+url = "https://archive.ics.uci.edu/ml/machine-learning-databases/00267/data_banknote_authentication.txt"
+columns = ["variance", "skewness", "curtosis", "entropy", "class"]
+data = pd.read_csv(url, header=None, names=columns)
+
+# 類別分布
+sns.countplot(x="class", data=data)
+plt.title("Class Distribution")
+plt.savefig("class_distribution.png")
+plt.close()
+
+# 特徵 pairplot
+sns.pairplot(data, hue="class", palette="husl")
+plt.suptitle("Pairplot of Banknote Authentication Dataset", y=1.02)
+plt.tight_layout()
+plt.savefig("banknote_raw_pairplot.png")
+plt.close()
+
+# === 2. 特徵與標籤 ===
+X = data.drop("class", axis=1)
+y = data["class"]
+
+# === 3. 資料切分與標準化 ===
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+X_scaled = scaler.fit_transform(X)
+
+# === 4. 建立模型 ===
+models = {
+    "Logistic Regression": LogisticRegression(),
+    "Random Forest": RandomForestClassifier(random_state=42),
+    "SVM": SVC(probability=True)
+}
+
+results = []
+
+# === 5. 模型訓練與評估 ===
+plt.figure(figsize=(8, 6))
+for name, model in models.items():
+    start_time = time.time()
+
+    if name in ["Logistic Regression", "SVM"]:
+        model.fit(X_train_scaled, y_train)
+        y_pred = model.predict(X_test_scaled)
+        y_score = model.predict_proba(X_test_scaled)[:, 1]
+    else:
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        y_score = model.predict_proba(X_test)[:, 1]
+
+    end_time = time.time()
+
+    accuracy = accuracy_score(y_test, y_pred)
+    precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred, average="weighted")
+    duration = end_time - start_time
+
+    results.append([name, accuracy, precision, recall, f1, duration])
+
+    # 混淆矩陣
+    cm = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(5, 4))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=[0, 1], yticklabels=[0, 1])
+    plt.title(f"{name} - Confusion Matrix")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.tight_layout()
+    plt.savefig(f"{name.replace(' ', '_')}_confusion_matrix.png")
+    plt.close()
+
+    # ROC 曲線
+    fpr, tpr, _ = roc_curve(y_test, y_score)
+    roc_auc = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.4f})')
+
+# 繪製 ROC Curve
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve")
+plt.legend(loc="lower right")
+plt.savefig("banknote_roc_curve.png")
+plt.close()
+
+# === 6. 特徵重要性（僅限 RF） ===
+rf = models["Random Forest"]
+importances = rf.feature_importances_
+plt.barh(columns[:-1], importances)
+plt.xlabel("Feature Importance")
+plt.title("Random Forest Feature Importance")
+plt.savefig("rf_feature_importance.png")
+plt.close()
+
+# === 7. 交叉驗證（5-fold） ===
+print("=== 5-Fold Cross-Validation Accuracy ===")
+for name, model in models.items():
+    if name in ["Logistic Regression", "SVM"]:
+        scores = cross_val_score(model, X_scaled, y, cv=5, scoring='accuracy')
+    else:
+        scores = cross_val_score(model, X, y, cv=5, scoring='accuracy')
+    print(f"{name}: {scores.mean():.4f} (+/- {scores.std():.4f})")
+
+# === 8. 輸出結果表格 ===
+results_df = pd.DataFrame(results, columns=["Model", "Accuracy", "Precision", "Recall", "F1 Score", "Training Time (s)"])
+print("\n=== Evaluation Results ===")
+print(results_df)
